@@ -1,4 +1,4 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-03. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-05. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # Azure Commit — recommendation system-of-record design
 
@@ -185,6 +185,7 @@ recommended_term             VARCHAR,               -- advice param: 'P1Y' | 'P3
 effective_od_monthly_cost    FLOAT,                 -- customer-effective baseline (FOCUS), NOT retail
 projected_commit_monthly_cost FLOAT,
 estimated_monthly_saving     FLOAT,                 -- projection at current sizing
+currency                     VARCHAR,               -- governs the 3 cost columns; per-rec (one run can mix GBP+USD) — aggregations must GROUP BY it
 
 date_first_recommended       TIMESTAMP_NTZ(9),
 first_seen_scan              VARCHAR,
@@ -339,8 +340,11 @@ Reads one run file (one `(tenant, service)`) from `s3://…/commit/`, per the
 [output contract](output-contract.md). Per file, in **one transaction**:
 
 1. **Validate / guard** — reject unknown `version`; skip `status:failure`; **reject if `count` ≠
-   `recommendations.length`** (truncated/corrupt file → false withdrawals). Skip if `run_id` is
-   already in `ingest_run` (idempotent).
+   `recommendations.length`** (truncated/corrupt file → false withdrawals); **reject if any rec's
+   `tenant_id`/`service` ≠ the header** (one file = one `(tenant, service)`; a mismatch would false-
+   withdraw the header's whole set). Skip if `run_id` is already in `ingest_run` **for the same
+   `(tenant, service)`** (idempotent); **reject** a `run_id` reused for a *different* one (collision —
+   skipping it as a "duplicate" would silently drop the file's data).
 2. **Identity** — `recommendation_id = sha256` of the five identity fields, fixed order,
    pipe-separated, each `trim`+`lower`.
 3. **Upsert** — `MERGE` into `recommendation`; the `min_wastage` sizing fills the scalar columns,
@@ -348,16 +352,21 @@ Reads one run file (one `(tenant, service)`) from `s3://…/commit/`, per the
 4. **Withdraw** — recommendations `open` in the DB but **absent this run** → `withdrawn`. **Skip
    withdrawal entirely if `is_complete:false`.** Scope-type split:
    All v1 recs are `shared` scope (App Service included, as of 2026-07-03), keyed by the **billing
-   scope** (enrollment ID for EA, billing profile for MCA), so match every open shared rec for this
-   `(tenant, service)`. (The `subscription`-scope path — `scope_id ∈ subscriptions_covered` — stays
-   in the code for future RG/subscription-scoped recs; v1 emits none.)
-   > [!warning] Bound to covered billing scopes before trusting this on a partial run.
-   > Matching *all* shared recs is only safe when the run covered every billing scope. Both current
-   > customers span **multiple** billing scopes (Itron: `69070706` + `101021785400001`; Eptura
-   > likewise), so a *partial* run (some subs failed, `is_complete` still true for the rest) would
-   > wrongly withdraw recs for scopes it never scanned. Before enabling withdrawal for real: the run
-   > must declare which billing scopes it covered (the shared analogue of `subscriptions_covered`),
-   > and withdrawal bounds to it.
+   scope** (enrollment ID for EA, billing profile for MCA). Withdrawal is **bounded to the billing
+   scopes present in the file** — match only open shared recs whose `scope_id` appears in this run.
+   (The `subscription`-scope path — `scope_id ∈ subscriptions_covered` — stays in the code for future
+   RG/subscription-scoped recs; v1 emits none.)
+   > [!note] Why the shared bound is safe — and its one gap.
+   > A shared rec's `scope_id` **is** its billing scope, and both current customers span **multiple**
+   > (Itron: `69070706` + `101021785400001`; Eptura likewise). Matching *all* shared recs
+   > would wrongly withdraw a scope a *partial* run never scanned (some subs failed, `is_complete`
+   > still true for the rest). The `min_wastage` **send-0-never-omit** rule closes this: a scanned
+   > scope always emits at least a zero rec, so a `scope_id` absent from the file means that scope
+   > wasn't scanned — bounding to present scopes can't false-withdraw it.
+   > **Gap:** a scope scanned to *genuinely nothing* (every resource gone, so no rec at all) also
+   > drops out, leaving its old recs stale-`open` rather than `withdrawn`. That's the safe direction
+   > (under-withdraw, never over-withdraw). A run-declared **billing-scopes-covered** list (the shared
+   > analogue of `subscriptions_covered`) would close it precisely; deferred until the contract adds it.
 5. Record the file in `ingest_run`; commit.
 
 New `open` recommendations surface to the operator queue.
