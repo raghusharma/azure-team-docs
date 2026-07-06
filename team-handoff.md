@@ -4,7 +4,7 @@
 
 What we want: your engine produces the **same recommendations it already produces**, but as a **JSON file per run** instead of the Excel. Same numbers, new shape. The pipeline reads that file, loads it to the DB, and bills off it.
 
-Covers **all three services** — App Service, VM, SQL. App Service is worked in full below (against full_account_recs.xlsx, 2026-06-24); **VM & SQL** share the same file shape and rules, with their differences in the **VM & SQL** section near the end. Nothing here changes *how* you find recommendations — only how you hand them over.
+Covers **all three v1 services** — App Service, VM, SQL — plus the **proposed** shape for **Log Analytics / Sentinel tiers** (new section near the end; design pending pipeline-side agreement). App Service is worked in full below (against full_account_recs.xlsx, 2026-06-24); **VM & SQL** share the same file shape and rules, with their differences in the **VM & SQL** section near the end. Nothing here changes *how* you find recommendations — only how you hand them over.
 
 Full spec: [Azure Commit recommendation output contract](output-contract.md). SKU families for VM/SQL: [Azure reservation SKU families (ISF) reference](isf-sku-families-reference.md). This note is the short version.
 
@@ -165,6 +165,48 @@ VM and SQL already emit **shared-scope, cross-sub aggregated** output, so they n
 - ⚠️ **`normalized_sku_family` must include deployment type + zone-redundancy** — `vCore` and `vCore ZR` are *separate* reservation types, and SQL DB vs Managed Instance differ. Don't leave `Zone Redundant` as a loose column, or a ZR and non-ZR rec collapse onto one id.
 - ⚠️ **Currency** — SQL emits **USD** today; it must emit the billing scope's currency (**GBP** for Eptura) on **each recommendation**, or costs can't be summed across services.
 - **DTU-based** databases can't be reserved (vCore model only) — skip them.
+
+## Log Analytics / Sentinel tiers — proposed (not yet v1)
+
+For the LA-tier script you're building. Same file shape, same 4 rules — but the commitment
+here is a **workspace pricing tier** (a SKU setting with a 31-day downgrade right), not a
+reservation, so identity and a few enums differ. Design is proposed, pending pipeline-side
+agreement — spec in the contract's Open list.
+
+**Identity — the tier binds to one workspace, it doesn't pool:**
+
+| Field | Value | Note |
+|---|---|---|
+| `scope_type` | `resource` | new enum value |
+| `scope_id` | the workspace's **full ARM resource ID**, lowercased | deliberate exception to the bare-ID rule — a workspace path isn't reconstructable, and the "purchase" is an ARM PATCH on it |
+| `service` | `log_analytics` \| `sentinel` | one run (file) per service, like the others |
+| `normalized_sku_family` | `commitment-tier` (constant) | scope_id already makes the row unique |
+| `region` | workspace region, canonical | |
+
+**Action fields:** `recommended_commitment_type: "commitment_tier"`, `recommended_term: null`
+(no term). `sizings[].quantity` = the recommended **tier level in GB/day** (e.g. `1000`) —
+re-tiering updates the same row. `quantity: 0` = "no tier / PAYG is right". One `min_wastage`
+sizing; no `advance`.
+
+**Sizing rules — each of these bit us live on Itron:**
+
+1. **Pricing regime is per-workspace, from billing meters.** Classic = separate LA ingestion
+   meter + Sentinel "…Analysis" meters → emit **two rows** (an `log_analytics` and a
+   `sentinel` one). Simplified = commitment-tier meters under meter category `Sentinel`, no
+   LA ingestion meter → emit **only the `sentinel` row**. One tenant can mix both regimes.
+2. **Size on Analytics-tier volume only** — exclude Basic/Auxiliary Logs before computing the
+   series (Itron's big workspace: 4.1 TB/day total, only ~1.4 TB/day tier-eligible).
+3. **Billing meters are the source of truth for volume and rates.** The ARM table-plan API
+   contradicted the meters at Itron (`plan: null` on tables billing as Basic), and raw
+   `Usage` totals include non-eligible volume. Daily meter quantities literally encode the
+   volume: `qty × tier-unit-GB = GB billed that day` at the tier's effective rate.
+4. **FOCUS gotcha:** Sentinel never appears as `ServiceName = 'Sentinel'` — it bills under
+   `'Azure Monitor'`; filter on `x_SkuMeterCategory = 'Sentinel'`.
+5. **Rates are customer-effective** (rule #4 as usual) — derive $/GB from the meters
+   themselves (Itron's EA is 22% below retail), not the Retail Prices API.
+6. **One workspace can carry multiple tier meters for different streams** (Itron: Syslog on
+   its own 50 GB/day tier beside the main 1000). Treat them as separate streams — don't sum
+   them into one commitment, and flag them for review rather than auto-recommending.
 
 ## Where to drop the file
 
