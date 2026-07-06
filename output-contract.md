@@ -1,4 +1,4 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-05. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-06. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # Azure Commit recommendation output contract
 
@@ -116,6 +116,9 @@ The fifth thing is on **us**, not the team: build the id consistently in the pip
 >
 > **SQL identity carries more.** A SQL reservation is pinned by deployment type **and** zone-redundancy on top of tier+hardware. Both must be inside `normalized_sku_family` — e.g. `SQL DB · General Purpose Gen5` vs `SQL DB · General Purpose Gen5 ZR` are *different reservation types* and must not collapse to one row.
 
+> **Existing-commitment scans must also read workspace pricing tiers (LA / Sentinel)**
+> Log Analytics and Sentinel commitments are **workspace SKU settings** — `properties.sku.name = "CapacityReservation"` + `capacityReservationLevel` on the workspace resource — not `Microsoft.Capacity` reservation orders or `Microsoft.BillingBenefits` savings plans. A pre-existing-coverage scan (`evidence.preexisting_coverage_subtracted`) that reads only the Reservations/Savings-Plan APIs misses them entirely, and their charges also don't surface in FOCUS `CommitmentDiscount*` columns (they bill as plain "Commitment Tier" usage meters). Detect via Resource Graph on workspace SKUs. Caught live on Itron 2026-07-05: 4 tiered workspaces (incl. a 1000 GB/day tier), zero visible in the reservation inventory.
+
 ## Versioning
 
 `version` bumps when the format changes. The pipeline rejects a `version` it doesn't know and quarantines the file rather than half-reading it. Adding optional fields doesn't need a bump.
@@ -130,6 +133,7 @@ The fifth thing is on **us**, not the team: build the id consistently in the pip
 - [ ] **Verify: shared `scope_id` source** — confirm the FOCUS / Cost Management data we pull actually populates `BillingProfileId` (MCA) / `BillingAccountId` (EA) per usage row. Certain if the customer's FOCUS export is billing-account-scoped; worth a check if cost is queried per-subscription. *(v1 dependency for shared-scope recs)*
 - [x] **App Service scope** — resolved (2026-07-03): **`shared`, keyed by billing scope**, same as VM/SQL — *not* per-subscription. A reservation floats across every plan of that SKU in the scope, so shared pools it across subs (higher utilisation). The engine rolls all plans of a SKU up to one rec, sized on merged usage. *(caught on the first live run — Itron/Eptura App Service files came in as `shared`)*
 - [x] **`min_wastage` mandatory** — resolved (2026-07-03): always send a `min_wastage` sizing; use `quantity: 0` for "don't buy at the floor" rather than omitting it. `recommended_quantity` = the `min_wastage` quantity; the actionable list is `> 0`; zeros are stored but hidden. *(caught on the first live run — 18/94 Eptura recs arrived with only `advance`)*
+- [ ] **LA / Sentinel tiers as a Commit service** — the commitment vehicle is a workspace pricing tier (31-day downgrade right, no term, no purchase transaction), so `recommended_commitment_type` / `recommended_term` don't fit as-is; needs a contract extension before LA tier recommendations productionise. Engine already exists (`war-azure-log-analytics-commitment`). *(added 2026-07-05 after the Itron LA run)*
 - [ ] **v2: MG-scope pooling** — move from per-billing-scope shared to **management-group-scope** purchasing, so usage pools across billing scopes (shared pools only within one; Eptura has 16). Sizing stays on merged usage; MG scope is tenant-bound. *(deferred — v1's min-wastage floor already removes most waste, and all three services already pool within their billing scope)*
 
 ## Related

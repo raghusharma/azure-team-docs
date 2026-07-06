@@ -1,4 +1,4 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-05. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-06. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # Azure Commit contract — team handoff
 
