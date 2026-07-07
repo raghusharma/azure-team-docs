@@ -1,4 +1,4 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-06. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-07. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # Azure reservation SKU families (ISF) reference
 

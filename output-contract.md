@@ -1,4 +1,4 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-06. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-07. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # Azure Commit recommendation output contract
 
@@ -140,6 +140,7 @@ The fifth thing is on **us**, not the team: build the id consistently in the pip
 	- Tier level = `sizings[].quantity` in GB/day (action, not identity) — re-tiering updates the same row.
 	- `recommended_commitment_type: "commitment_tier"` (new value); `recommended_term: null` — tiers have a 31-day downgrade right, no term.
 	- Caveat: workspaces on Sentinel **simplified pricing** have one merged meter/tier → emit only the `sentinel` row for those. **Detection is per-workspace, from the export meters** (regimes mix within one tenant — Itron runs both): simplified = commitment-tier meters under `x_SkuMeterCategory = 'Sentinel'` and **no** LA ingestion meter for the workspace; classic = "…Analysis" Sentinel meters **plus** separate LA ingestion meters. FOCUS gotcha: Sentinel never appears as `ServiceName = 'Sentinel'` — it bills under `ServiceName = 'Azure Monitor'`; filter on meter category. Sizing gotcha: commitment tiers cover **Analytics-tier ingestion only** — exclude Basic/Auxiliary Logs volume before sizing (Itron's big workspace: 4.1 TB/day total but only ~1.3 TB/day tier-eligible).
+	- **Withdrawal needs a `workspaces_covered` signal (pipeline side).** The loader accepts `resource` scope and bounds withdrawal to the workspaces present in the file, so it never *falsely* withdraws. But with one rec per (workspace, service), an absent workspace is indistinguishable from unscanned, so a genuinely gone tier — **workspace deleted**, or a **classic→simplified switch** that legitimately drops the `log_analytics` row — is conservatively kept `open`, never withdrawn. To close that, the header needs a **`workspaces_covered` list** (the resource-scope analogue of `subscriptions_covered`): withdrawal then applies to workspaces scanned-but-now-absent, and leaves unscanned ones untouched. Same interim gap as shared scope's disappeared billing scope — deferred, not blocking v1.
 - [ ] **v2: MG-scope pooling** — move from per-billing-scope shared to **management-group-scope** purchasing, so usage pools across billing scopes (shared pools only within one; Eptura has 16). Sizing stays on merged usage; MG scope is tenant-bound. *(deferred — v1's min-wastage floor already removes most waste, and all three services already pool within their billing scope)*
 
 ## Related
