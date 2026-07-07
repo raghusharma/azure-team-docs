@@ -17,7 +17,7 @@ One run = one JSON file.
   // header — what this run is
   "version": "1.0",
   "run_id": "2026-06-24T10-36-02Z_eptura_appservice",   // unique per run — full UTC timestamp to seconds (multiple runs/day must not collide); filename-safe, no colons
-  "tenant_id": "adb48caa-0b14-4256-b178-a5e508c807f5",
+  "tenant_id": "<tenant-id>",
   "service": "appservice",                     // 'compute' | 'sql' | 'appservice'
   "subscriptions_covered": [                   // every sub this run scanned (you scan ~79) — list ALL of them, even those with no recs
     "<sub-guid-1>", "<sub-guid-2>", "..."
@@ -64,7 +64,7 @@ Filled in:
 ```jsonc
 {
   // identity — 5 fields, spell them the same way every run
-  "tenant_id": "adb48caa-0b14-4256-b178-a5e508c807f5",
+  "tenant_id": "<tenant-id>",
   "scope_type": "shared",
   "scope_id": "XXXX-XXXX-XXX-XXX",             // billing profile ID (bare), from the FOCUS/cost data
   "region": "uksouth",
