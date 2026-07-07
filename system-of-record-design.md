@@ -51,25 +51,29 @@ The customer **Savings Delivered** page is frontend/API over the summary table �
 ### Repository structure (all four in one repo)
 
 One repo (`azure-commit-pipeline`), one shared `sql/schema.sql`, one Snowflake config —
-so the four pipelines live together, not in four repos. Target layout: a shared `common`
-package (Snowflake config, DB/MERGE helpers, `errors`, `s3`) + one subpackage per pipeline:
+so the four pipelines live together, not in four repos. A shared `common` package + one
+subpackage per pipeline:
 
 ```
 azure_commit/
-  common/        config, db helpers, errors, s3        ← shared by all four
-  ingest/        contract, identity, mapping, pipeline  ← #1 (built)
-  commitment/    Azure API client → commitment_ledger   ← #2
-  savings/       FOCUS export → summary table           ← #3
-  invoice/       ledger ⨝ summary → report              ← #4
+  common/        config, s3, errors, logging, identity   ← shared by all four
+  ingest/        contract, mapping, pipeline, repository  ← #1 (built)
+  # commitment/  Azure API client → commitment_ledger    ← #2, added with its code
+  # savings/     FOCUS export → summary table            ← #3
+  # invoice/     ledger ⨝ summary → report               ← #4
 ```
 
-**Not yet done — deliberately deferred.** #1 currently ships as a flat `commit_loader/`
-package (half shared infra, half ingest-specific). The refactor into `common/` + `ingest/`
-is the **first step of building #2**, not a big-bang now: that's when a second consumer of
-`config`/`db` makes the shared seam real, and it avoids disturbing #1 while it goes to
-production on EC2. The rename also kills a naming collision — `commit_loader` (package) vs
-the **commitment loader** (#2) is the same reservation-vs-recommendation trap, so the ingest
-package becomes `azure_commit/ingest`.
+**Done 2026-07-07** (the first step of building #2). The flat `commit_loader/` package was
+split into `azure_commit/common` + `azure_commit/ingest`; the rename also kills the
+`commit_loader` (package) vs **commitment loader** (#2) naming collision. Empty stub packages
+for #2–#4 were *not* created — each lands with its code. Two calls firmed up the sketch:
+- **`identity` lives in `common`, not `ingest`.** `recommendation_id` is the cross-pipeline
+  join key (the commitment loader recomputes it to match a holding to its rec), so keeping it
+  in `ingest` would couple sibling pipelines; `normalize_field` was already shared with the
+  repo's scope-id matching.
+- **The shared Snowflake connection seam is not extracted yet.** `snowflake_repo` stays whole
+  in `ingest`; the connection/transaction base lifts into `common/db.py` when the commitment
+  loader gives it a real second consumer — avoiding churn on #1's tested code before then.
 
 ## Core principle: target (mutable) vs holdings (immutable)
 
@@ -374,7 +378,7 @@ New `open` recommendations surface to the operator queue.
 Ledger population (CK purchase records + pre-existing-reservation scan) is the **reservations
 loader** — a sibling MVP build on the holdings path, not this loader.
 
-**Code:** implemented in the `azure-commit-loader` repo (kept out of the vault — code isn't
+**Code:** implemented in the `azure-commit-pipeline` repo (kept out of the vault — code isn't
 vault content). Its README links back to this design and the output contract.
 
 ## Tuner reuse (shelved)
