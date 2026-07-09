@@ -13,6 +13,6 @@ full spec and background it links to.
 Tip: this folder is plain markdown — point Claude at it (add it to a
 claude.ai project, or open it in Claude Code) and ask questions against it.
 
-Last published: 2026-07-07. These files are generated copies — don't edit
+Last published: 2026-07-09. These files are generated copies — don't edit
 them here; the source of truth lives with Raghu Sharma and republishes
 over this repo.

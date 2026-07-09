@@ -1,4 +1,4 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-07. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-09. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # Azure Commit — recommendation system-of-record design
 
@@ -37,7 +37,7 @@ Four pipelines across two tracks (advice vs holdings), mapping to the five boxes
 |---|---|---|---|---|---|
 | 1 | **ingest loader** | recommendation run files (S3 `commit/`) | `recommendation`, `recommendation_run_log`, `ingest_run` | advice | built |
 | 2 | **commitment loader** | CK purchase records + pre-existing-reservation scan | `commitment_ledger` | holdings | to build |
-| 3 | **realized-savings loader** | discounted usage (FOCUS) tagged by `lease_id` | summary table (per-resource realized savings) | holdings | to build |
+| 3 | **realized-savings loader** | discounted usage (FOCUS parquet, from the S3 landing) tagged by `lease_id` | summary table (per-resource realized savings) | holdings | to build |
 | 4 | **invoice generator** | `commitment_ledger` ⨝ summary (on `lease_id`) | invoice (a report, not a table) | billing | to build |
 
 **"Commitment loader"** (not "reservation loader"): matches `commitment_ledger`, and *commitment
@@ -74,6 +74,46 @@ for #2–#4 were *not* created — each lands with its code. Two calls firmed up
 - **The shared Snowflake connection seam is not extracted yet.** `snowflake_repo` stays whole
   in `ingest`; the connection/transaction base lifts into `common/db.py` when the commitment
   loader gives it a real second consumer — avoiding churn on #1's tested code before then.
+
+## Export landing: customer Blob → CK S3
+
+Decided 2026-07-09. Pipelines consume cost exports from **CK's production S3, not the
+customer's storage account**. A thin daily copy job — running in the **production account**
+(both prod & nonprod NAT EIPs are on Itron's storage allowlist, confirmed 2026-07-09;
+bucket in the same account, no cross-account access) — picks up each new export run via its
+`manifest.json` and mirrors the raw parquet to S3 **unchanged**. Everything downstream
+(#3 and any other usage reader) reads only from S3.
+
+The AWS side of Commit lands customer billing data via managed S3→S3 replication; a managed
+Blob→S3 transfer is the eventual analogue here. Deliberately deferred — the copy job is
+enough and doesn't block other builds.
+
+Why: raw history survives customer-side retention/access changes (storage firewall, SOW
+end); reprocessing never touches the customer again; one copy serves every consumer.
+
+- **All three datasets** (focus + actual + amortized), not just FOCUS — same rationale as
+  the onboarding "All data" template: engine changes then need zero customer-side change.
+- **Dated pulls, not a mirror** — land under
+  `azure-cost/<customer>/<export-name>/<billing-month>/<pull-date>/` (manifest included).
+  The exports run `OverwritePreviousReport`, so Azure keeps only the latest month-to-date
+  run; dated pulls preserve the restatement history Azure discards. If size ever matters,
+  lifecycle-expire intra-month pulls but keep each month's final pull forever.
+- **Source is a URI, not an abstraction layer** — readers take a manifest URI and read via
+  fsspec/duckdb, which handle `s3://` and `abfss://` alike. Moving pipelines to Azure later
+  is a config change to the source URI; no adapter framework.
+- The copy job records each pull (which run-GUID, which files, row/byte counts from the
+  manifest) so a DB load can state exactly which pull it was built from — same idempotency
+  discipline as `ingest_run`, whether as a new kind in that table or a sibling ledger (decide
+  at build time).
+- Overwrite mode means each daily pull re-downloads the whole month-to-date (no incremental
+  runs). Azure egress is billed to the customer's storage account; at Itron scale this is a
+  few GB/day compressed — negligible, but worth stating in the onboarding doc.
+
+**Lens boundary**: Lens (visibility) ingests the actual/amortized parquet with its own
+transforms into its master/summary tables. Commit deliberately does **not** read those —
+different needs (FOCUS-native, customer-effective cost, `lease_id` attribution,
+billing-grade lineage for the 25% invoice). The shared artifact is the export feed itself,
+not a shared table.
 
 ## Core principle: target (mutable) vs holdings (immutable)
 
@@ -362,7 +402,8 @@ Reads one run file (one `(tenant, service)`) from `s3://…/commit/`, per the
    RG/subscription-scoped recs; v1 emits none.)
    > [!note] Why the shared bound is safe — and its one gap.
    > A shared rec's `scope_id` **is** its billing scope, and both current customers span **multiple**
-   > (Itron: `69070706` + `101021785400001`; Eptura likewise). Matching *all* shared recs
+   > (Itron: EA `69070706` + a ~217-sub MOSP/MCA dev tail, each sub its own billing account —
+   > the earlier second-scope ID `101021785400001` was bogus; Eptura: 16 MCA billing profiles). Matching *all* shared recs
    > would wrongly withdraw a scope a *partial* run never scanned (some subs failed, `is_complete`
    > still true for the rest). The `min_wastage` **send-0-never-omit** rule closes this: a scanned
    > scope always emits at least a zero rec, so a `scope_id` absent from the file means that scope
