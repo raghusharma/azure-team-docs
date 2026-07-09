@@ -2,11 +2,17 @@
 
 # Azure Commit — recommendation system-of-record design
 
-The **upstream model** that Azure Commit summary table schema explicitly defers
-("the upstream model is still TBD"). The summary table is the frontend-facing *terminal
-sink* (realized economics per resource per usage-date). This doc designs the table that
-sits **before** it: the system-of-record for *what we recommended and what happened to it*,
-which is what the 25% chargeback is billed against.
+> **House rules for this doc — read before editing**
+> This is the **why**: the model and the architecture decisions. Keep it that way.
+> - **Present tense, no decision log.** No dated "Decisions locked" entries — git history is the log.
+> - **No code mechanics.** Parse/MERGE/invariant detail lives in the pipeline repo's `CLAUDE.md`.
+> - **No acquisition map.** Which API/scope/RBAC yields which holding lives in the [Azure Commit holdings scan contract](holdings-scan-contract.md).
+> - **Litmus:** if a section reads like a changelog, restates code, or lists per-customer steps, it's in the wrong doc. One strong line + a link beats a re-derived paragraph.
+
+The **upstream model** feeding Azure Commit summary table schema, the frontend-facing
+*terminal sink* (realized economics per resource per usage-date). This doc designs what sits
+**before** it: the system-of-record for *what we recommended and what happened to it* — the
+basis the 25% chargeback is billed against.
 
 Scoped **Commit-first** (Azure Commit is current priority). Azure Tuner reuses the
 same spine later — see Tuner reuse (shelved).
@@ -15,11 +21,11 @@ same spine later — see Tuner reuse (shelved).
 
 ```
 Generate → RECORD → Detect(purchase) → Attribute → Display
- skills    (this    reservation API    realized    summary table
+ scripts   (this    reservation API    realized    summary table
            doc)                        savings     (already designed)
 ```
 
-- **Generate** — the war-azure RI/SP skills. A scanner. Upserts into Record.
+- **Generate** — the RI/SP recommendation scripts the team is building. A scanner; emits the run files the ingest loader (#1) records.
 - **Record** — *this doc.* System-of-record: two tables — `recommendation` (mutable target) + `commitment_ledger` (immutable holdings).
 - **Detect** — for Commit, "implemented" = *reservation purchased* (billing/reservation API),
   **not** infra-change detection. That (Box 3, `resourcechanges` diffing) is Tuner-only.
@@ -36,13 +42,13 @@ Four pipelines across two tracks (advice vs holdings), mapping to the five boxes
 | # | Pipeline | Reads | Writes | Track | Status |
 |---|---|---|---|---|---|
 | 1 | **ingest loader** | recommendation run files (S3 `commit/`) | `recommendation`, `recommendation_run_log`, `ingest_run` | advice | built |
-| 2 | **commitment loader** | CK purchase records + pre-existing-reservation scan | `commitment_ledger` | holdings | to build |
+| 2 | **commitment loader** | a [holdings scan file](holdings-scan-contract.md) (S3) — CK purchases + pre-existing reservations/SPs/LA tiers, producer-normalized | `commitment_ledger` | holdings | built |
 | 3 | **realized-savings loader** | discounted usage (FOCUS parquet, from the S3 landing) tagged by `lease_id` | summary table (per-resource realized savings) | holdings | to build |
 | 4 | **invoice generator** | `commitment_ledger` ⨝ summary (on `lease_id`) | invoice (a report, not a table) | billing | to build |
 
-**"Commitment loader"** (not "reservation loader"): matches `commitment_ledger`, and *commitment
-discount* is the umbrella for both Reserved Instances **and** Savings Plans ("reservation" reads
-as RI-only).
+**"Commitment loader"** (not "reservation loader"): it matches `commitment_ledger`, and
+*commitment discount* is the umbrella for both Reserved Instances **and** Savings Plans
+("reservation" reads as RI-only).
 
 The customer **Savings Delivered** page is frontend/API over the summary table — downstream of
 #3, not one of the four. Invoice = `25% × realized savings` for holdings where
@@ -56,39 +62,43 @@ subpackage per pipeline:
 
 ```
 azure_commit/
-  common/        config, s3, errors, logging, identity   ← shared by all four
-  ingest/        contract, mapping, pipeline, repository  ← #1 (built)
-  # commitment/  Azure API client → commitment_ledger    ← #2, added with its code
-  # savings/     FOCUS export → summary table            ← #3
-  # invoice/     ledger ⨝ summary → report               ← #4
+  common/        config, s3, errors, logging, identity, db  ← shared by all four
+  ingest/        contract, mapping, pipeline, repository     ← #1 (built)
+  commitment/    contract, mapping, pipeline, repository     ← #2 (built)
+  # savings/     FOCUS export → summary table                ← #3
+  # invoice/     ledger ⨝ summary → report                   ← #4
 ```
 
-**Done 2026-07-07** (the first step of building #2). The flat `commit_loader/` package was
-split into `azure_commit/common` + `azure_commit/ingest`; the rename also kills the
-`commit_loader` (package) vs **commitment loader** (#2) naming collision. Empty stub packages
-for #2–#4 were *not* created — each lands with its code. Two calls firmed up the sketch:
-- **`identity` lives in `common`, not `ingest`.** `recommendation_id` is the cross-pipeline
-  join key (the commitment loader recomputes it to match a holding to its rec), so keeping it
-  in `ingest` would couple sibling pipelines; `normalize_field` was already shared with the
-  repo's scope-id matching.
-- **The shared Snowflake connection seam is not extracted yet.** `snowflake_repo` stays whole
-  in `ingest`; the connection/transaction base lifts into `common/db.py` when the commitment
-  loader gives it a real second consumer — avoiding churn on #1's tested code before then.
+Two structural rules hold the pipelines together without coupling them: **`common` never imports
+from a pipeline package** (pipelines import from `common`), and **`identity` lives in `common`** —
+`recommendation_id` is the cross-pipeline join key, so the commitment loader recomputes it there to
+match a holding to its rec. The Snowflake connection / transaction / schema seam is a shared
+`common/db.py` base both loaders' `snowflake_repo` inherit. No empty stub packages — each pipeline
+lands with its code.
 
 ## Export landing: customer Blob → CK S3
 
-Decided 2026-07-09. Pipelines consume cost exports from **CK's production S3, not the
-customer's storage account**. A thin daily copy job — running in the **production account**
-(both prod & nonprod NAT EIPs are on Itron's storage allowlist, confirmed 2026-07-09;
-bucket in the same account, no cross-account access) — picks up each new export run via its
-`manifest.json` and mirrors the raw parquet to S3 **unchanged**. Everything downstream
-(#3 and any other usage reader) reads only from S3.
+Pipelines consume cost exports from **CK's S3, not the customer's storage account**. A thin daily copy job — an AWS **Lambda** in the target
+account's VPC, egressing through the NAT EIP on Itron's storage allowlist (both prod &
+nonprod EIPs allowlisted, confirmed 2026-07-09) — reads each export run's `manifest.json` and
+mirrors the raw parquet to S3 **unchanged**. Lambda and bucket sit in the **same account** (the
+data path is not cross-account); everything downstream (#3 and any other usage reader) reads
+only from S3. VPC-attach is load-bearing — a default Lambda's egress IPs are firewall-denied.
 
-The AWS side of Commit lands customer billing data via managed S3→S3 replication; a managed
-Blob→S3 transfer is the eventual analogue here. Deliberately deferred — the copy job is
-enough and doesn't block other builds.
+**Where it lands:** a **new dedicated cost-export bucket**, in the **production account for now**.
+The eventual home is the data account (where every cloud's CUR processing lives), but that would
+block on access coordination — prod's EIP is already allowlisted, so start there. Migration later
+is an S3→S3 copy (Azure overwrites month-to-date, so history can't be re-pulled) plus a config
+repoint; bucket/prefix stay behind config. No external layout convention — we define our own.
 
-Why: raw history survives customer-side retention/access changes (storage firewall, SOW
+**Runtime & infra:** Go Lambda + EventBridge daily schedule, provisioned by **Pulumi (Go)** in a
+separate repo (`azure-cost-export-copy`) with `dev` (non-prod) and `prod` stacks. Non-prod is a
+*real* end-to-end test — its NAT EIP is also allowlisted, so a `dev` Lambda reaches live Itron
+data. Failure signalling via **SNS**, on two independent triggers: an `Errors` alarm (ran and
+failed) and an `Invocations` dead-man's-switch (never ran). A managed Blob→S3 transfer is the
+eventual analogue but stays deferred — the copy job is enough and doesn't block other builds.
+
+Why S3 at all: raw history survives customer-side retention/access changes (storage firewall, SOW
 end); reprocessing never touches the customer again; one copy serves every consumer.
 
 - **All three datasets** (focus + actual + amortized), not just FOCUS — same rationale as
@@ -101,10 +111,11 @@ end); reprocessing never touches the customer again; one copy serves every consu
 - **Source is a URI, not an abstraction layer** — readers take a manifest URI and read via
   fsspec/duckdb, which handle `s3://` and `abfss://` alike. Moving pipelines to Azure later
   is a config change to the source URI; no adapter framework.
-- The copy job records each pull (which run-GUID, which files, row/byte counts from the
-  manifest) so a DB load can state exactly which pull it was built from — same idempotency
-  discipline as `ingest_run`, whether as a new kind in that table or a sibling ledger (decide
-  at build time).
+- The copy job records each pull as an S3 `_COPY_COMPLETE.json` marker beside the data
+  (run-GUID, files, row/byte counts from the manifest), and **skips the whole pull if that
+  run-GUID is already copied**. This resolves the earlier "new `ingest_run` kind vs sibling
+  ledger" question: **no DB table** — the marker is self-describing, travels with the data
+  during the data-account migration, and the savings loader (#3) reads it for provenance.
 - Overwrite mode means each daily pull re-downloads the whole month-to-date (no incremental
   runs). Azure egress is billed to the customer's storage account; at Itron scale this is a
   few GB/day compressed — negligible, but worth stating in the onboarding doc.
@@ -151,8 +162,8 @@ the empty GUID `00000000-…`** (that invents a phantom subscription and misallo
 
 ### Deterministic identity (the load-bearing decision)
 
-The consolidated CSV is the **union of many scans** — the same need appears every run. A CSV
-row is an *observation* with no identity; the DB collapses N observations into one entity
+Each run file is one scan; across runs the same need reappears. A run's row for that need is an
+*observation* with no identity of its own — the DB collapses those N observations into one entity
 via a deterministic key derived from **what makes a need the same need:**
 
 ```
@@ -182,7 +193,10 @@ against the live ledger each scan:
 - **recommendation.status** = advice state, from three independent sources — `open` (residual > 0)
   · `covered` (residual ≈ 0, a **ledger** fact) · `withdrawn` (dropped from the generator feed) ·
   `dismissed` (an **operator** hid it). Only `covered` is ledger-driven. None touch billing.
-- **ledger.status** = holding state: `active` · `expired` · `exchanged` (tranche traded to an SP).
+- **ledger.status** = holding state: `active` · `expired` · `exchanged` (tranche traded to an SP)
+  · `cancelled` (Azure `provisioningState = Cancelled` — an early refund; distinct from term-elapsed
+  `expired`, and real in Itron data). Read from the scan, not inferred from absence — the loader
+  never withdraws a holding (see the commitment loader below).
 
 "Already purchased, now what?" is a non-question: the scan recomputes `coverage` and
 `residual`; top-ups and wastage are the sign of the residual. There is **no `reverted`
@@ -198,7 +212,8 @@ engine stopped advising it (customer self-bought, or the workload shrank). It re
 `withdrawn`, **not** `covered`: `covered` asserts *we* hold coverage (a ledger fact), which
 feed-absence can't tell us. Withdrawal changes advice only — a `withdrawn` recommendation with an
 active CK holding **keeps billing**. Never inferred from a `status:failure` or `is_complete:false`
-run. The scope-type split (shared vs subscription) lives in the loader steps below.
+run. Withdrawal is **bounded to the scopes present in the file** (see The loaders) so a partial
+scan never withdraws a scope it didn't look at.
 
 ## Schema (v0)
 
@@ -249,13 +264,13 @@ commitment_id            VARCHAR  PRIMARY KEY,   -- OUR internal id; one row per
 -- Azure ids: a reservation has two (order + reservation); a savings plan has its own.
 reservation_order_id     VARCHAR,                -- Azure reservationOrderId (null for savings plans)
 reservation_id           VARCHAR,                -- Azure reservationId (or savingsPlanId)
-lease_id                 VARCHAR,                -- the JOIN key to summary table (which of the above — TBD vs a real FOCUS export)
+lease_id                 VARCHAR,                -- JOIN key to summary; set from FOCUS CommitmentDiscountId (which level → #3)
 
 recommendation_id        VARCHAR,                -- FK (nullable: a pre-existing holding may match no rec)
 source                   VARCHAR,                -- 'ck-purchased' | 'customer-pre-existing'
 
-commitment_type          VARCHAR,                -- 'reserved_instance' | 'savings_plan'
-service                  VARCHAR,                -- 'compute' | 'sql' | 'appservice' (mapped from reservedResourceType)
+commitment_type          VARCHAR,                -- 'reserved_instance' | 'savings_plan' | 'log_analytics_commitment_tier'
+service                  VARCHAR,                -- 'compute' | 'sql' | 'appservice' | 'log_analytics' | 'sentinel'
 normalized_sku_family    VARCHAR,
 term                     VARCHAR,                -- 'P1Y' | 'P3Y'
 quantity                 NUMBER(18,2),           -- IMMUTABLE units bought
@@ -271,7 +286,7 @@ billing_account_id       VARCHAR,                -- resolved: EA enrollment / MC
 applied_scope_type       VARCHAR,                -- 'shared' | 'subscription' | 'management_group' | 'resource_group'
 applied_scope_id         VARCHAR,                -- null for 'shared'; sub/RG/MG id otherwise
 
-status                   VARCHAR,                -- 'active' | 'expired' | 'exchanged'
+status                   VARCHAR,                -- 'active' | 'expired' | 'exchanged' | 'cancelled'
 date_purchased           TIMESTAMP_NTZ(9),       -- benefit starts here
 term_end_date            DATE,
 amortized_upfront_cost   FLOAT,
@@ -294,8 +309,9 @@ forced into the schema:
 - **Two scopes, not one.** *Who pays* (`billing_scope_id`, a **subscription** even for
   Shared-scope EA reservations) is separate from *where the discount lands*
   (`applied_scope_type`). The old single `scope_*` conflated them.
-- **Two Azure ids** (`reservationOrderId` + `reservationId`); which one the FOCUS export joins on
-  is still TBD — hence both are stored and `lease_id` names the chosen one.
+- **Two Azure ids** (`reservationOrderId` + `reservationId`) — both stored. FOCUS carries the full
+  ARM reservation id in `CommitmentDiscountId` (rollable to the order GUID), so #3 has its join
+  source; `lease_id` names whichever level #3 settles on.
 - **Savings plans are a different Azure object** (`Microsoft.BillingBenefits/savingsPlans`, not
   `Microsoft.Capacity`), so the commitment loader has two source APIs — reinforcing the name.
 
@@ -366,8 +382,9 @@ One recommendation → many ledger rows is the same mechanism for four behaviors
 
 ## Flow into the existing summary table
 
-`lease_id` is the **Azure reservation identifier** (exact field — reservationId vs
-reservationOrderId — to confirm). `null` until purchased; set on the holding once bought.
+`lease_id` is the **Azure reservation identifier** carried by FOCUS `CommitmentDiscountId`
+(the full ARM id, rollable to the order GUID; #3 fixes the level). `null` until purchased; set on
+the holding once bought.
 Each per-resource row in Azure Commit summary table schema is tagged with the
 `LEASE_ID` that provided its benefit. So:
 
@@ -378,49 +395,56 @@ Each per-resource row in Azure Commit summary table schema is tagged with the
 Join `commitment_ledger.lease_id = summary.LEASE_ID` to roll realized per-resource savings
 back up to the holding (and thence the recommendation) being billed.
 
-## Loader: JSON → recommendation (Raghu's first build)
+## The loaders
 
-Reads one run file (one `(tenant, service)`) from `s3://…/commit/`, per the
-[output contract](output-contract.md). Per file, in **one transaction**:
+Two loaders populate the record. Both live in `azure-commit-pipeline` (code isn't vault content),
+consume a file contract from S3, and commit per file in one transaction. Their load-bearing
+*invariants* — strict all-or-nothing parse, identity hashing, withdrawal bounds, immutable-core
+MERGE — are documented as invariants in the repo's `CLAUDE.md`; the *model-level* decisions are here.
 
-1. **Validate / guard** — reject unknown `version`; skip `status:failure`; **reject if `count` ≠
-   `recommendations.length`** (truncated/corrupt file → false withdrawals); **reject if any rec's
-   `tenant_id`/`service` ≠ the header** (one file = one `(tenant, service)`; a mismatch would false-
-   withdraw the header's whole set). Skip if `run_id` is already in `ingest_run` **for the same
-   `(tenant, service)`** (idempotent); **reject** a `run_id` reused for a *different* one (collision —
-   skipping it as a "duplicate" would silently drop the file's data).
-2. **Identity** — `recommendation_id = sha256` of the five identity fields, fixed order,
-   pipe-separated, each `trim`+`lower`.
-3. **Upsert** — `MERGE` into `recommendation`; the `min_wastage` sizing fills the scalar columns,
-   full `sizings[]` → `details`. Append one row to `recommendation_run_log`.
-4. **Withdraw** — recommendations `open` in the DB but **absent this run** → `withdrawn`. **Skip
-   withdrawal entirely if `is_complete:false`.** Scope-type split:
-   All v1 recs are `shared` scope (App Service included, as of 2026-07-03), keyed by the **billing
-   scope** (enrollment ID for EA, billing profile for MCA). Withdrawal is **bounded to the billing
-   scopes present in the file** — match only open shared recs whose `scope_id` appears in this run.
-   (The `subscription`-scope path — `scope_id ∈ subscriptions_covered` — stays in the code for future
-   RG/subscription-scoped recs; v1 emits none.)
-   > [!note] Why the shared bound is safe — and its one gap.
-   > A shared rec's `scope_id` **is** its billing scope, and both current customers span **multiple**
-   > (Itron: EA `69070706` + a ~217-sub MOSP/MCA dev tail, each sub its own billing account —
-   > the earlier second-scope ID `101021785400001` was bogus; Eptura: 16 MCA billing profiles). Matching *all* shared recs
-   > would wrongly withdraw a scope a *partial* run never scanned (some subs failed, `is_complete`
-   > still true for the rest). The `min_wastage` **send-0-never-omit** rule closes this: a scanned
-   > scope always emits at least a zero rec, so a `scope_id` absent from the file means that scope
-   > wasn't scanned — bounding to present scopes can't false-withdraw it.
-   > **Gap:** a scope scanned to *genuinely nothing* (every resource gone, so no rec at all) also
-   > drops out, leaving its old recs stale-`open` rather than `withdrawn`. That's the safe direction
-   > (under-withdraw, never over-withdraw). A run-declared **billing-scopes-covered** list (the shared
-   > analogue of `subscriptions_covered`) would close it precisely; deferred until the contract adds it.
-5. Record the file in `ingest_run`; commit.
+### Ingest loader (#1) — advice
 
-New `open` recommendations surface to the operator queue.
+Reads recommendation run files (per the [output contract](output-contract.md))
+and `MERGE`-upserts `recommendation` + appends `recommendation_run_log`. A rec present last run and
+absent this run — within the scopes actually scanned — resolves to `withdrawn`: advice only, never
+billing, skipped when the run is incomplete, and **bounded to the scopes present in the file** so a
+partial scan can't false-withdraw a scope it never looked at. The target is a **durable row with
+status transitions, not a snapshot+diff** — partial fills, non-revertible buys, and ledger-backed
+coverage all need one stable identity that persists across runs (this is why Tuner's per-resource
+snapshot model doesn't fit; see below).
 
-Ledger population (CK purchase records + pre-existing-reservation scan) is the **reservations
-loader** — a sibling MVP build on the holdings path, not this loader.
+### Commitment loader (#2) — holdings
 
-**Code:** implemented in the `azure-commit-pipeline` repo (kept out of the vault — code isn't
-vault content). Its README links back to this design and the output contract.
+Reads a [holdings scan file](holdings-scan-contract.md) and `MERGE`-upserts
+`commitment_ledger`. Its architecture:
+
+- **Decoupled from Azure.** It consumes a producer-normalized scan, not live Azure, so it stays
+  customer-agnostic while the messy per-customer, per-source acquisition lives in the producer. The
+  producer carries the five identity fields already normalized; the loader recomputes
+  `recommendation_id` from them to link each holding to the rec it covers.
+- **No withdrawal; status is read, not inferred.** A holding you bought stays bought. Terminal
+  states (`cancelled`, `expired`) come from the scan itself (a full enumeration that includes them),
+  never from a holding's absence; the only derived transition is an `active`→`expired` date backstop.
+- **Idempotent on the natural key.** `MERGE` on `commitment_id` (from the Azure reservation/lease id)
+  — no run-ledger table. **Immutable core:** a re-scan refreshes only `status` / `billing_account_id`
+  / `details`; `quantity` / `term` / `date_purchased` are frozen at purchase, and
+  `realized_monthly_saving` is owned by #3.
+- **Billing is derived from `source`**, not the scan (it is CK commercial policy): `ck-purchased` →
+  billable with a 12-month fee window; `customer-pre-existing` → not billable but still recorded and
+  subtracted from sizing (see `billable` = attribution, not realization).
+
+### Data sourcing: FOCUS-first, APIs optional
+
+Customers arrive with different access — EA vs MCA, varying RBAC, infosec limits on what a service
+principal may read. **Standardization is not uniform access; it is uniform reliance on the FOCUS
+cost export** — the one source we require anyway (it feeds #3). Live Azure APIs are **optional
+enrichment, never a hard dependency**: a missing per-customer role *degrades precision, it never
+breaks the pipeline.* So RI holdings read from Reservation Reader and **fall back to FOCUS**; SP
+holdings come from **FOCUS** (the `Microsoft.BillingBenefits` API needs a billing-scoped role we
+deliberately don't require); LA/Sentinel tiers are the **one** genuine exception FOCUS can't see, so
+they use Resource Graph. One documented exception is fine — the rule is what caps their growth, and
+it's *unbounded* special cases that fail at scale. The concrete acquisition map lives with the
+[holdings scan contract](holdings-scan-contract.md).
 
 ## Tuner reuse (shelved)
 
@@ -428,28 +452,9 @@ Same spine (identity, target/holding split, chargeback), different engine. When 
 add `product = 'tuner'`; holdings become infra-change states; **Detect becomes infra-change
 diffing** (Box 3, `resourcechanges` — note the ~14-day retention gotcha); add a `reverted` state (Tuner changes *are* revertible). **Do not design this now.**
 
-## Decisions locked (2026-06-15)
+## Still open
 
-- Identity = `(tenant, scope, region, service, normalized_sku_family)`; **region in**,
-  **term + commitment_type out** (they're action params on the holding).
-- Two tables: recommendation (mutable target) + commitment ledger (immutable holdings).
-- `billable` = attribution flag (stored) × within-window × realized (derived).
-- Cost basis = customer-effective (FOCUS), not retail.
-
-## Decisions locked (2026-07-01, ingest loader)
-
-- **Sizings** — `min_wastage` fills the scalar columns (drives residual); `advance` → `details`
-  (display only; promote to real columns only if the frontend filters/sorts on it).
-- **`withdrawn`** — fourth `recommendation.status` for feed-absence; advice-only, never billing;
-  the row is kept, not deleted. Distinct from ledger-driven `covered` and operator `dismissed`.
-- **Append-only `recommendation_run_log`** — preserves the target time-series `MERGE` overwrites.
-- **Identity hash** — `sha256`, five fields, fixed order, pipe-separated, each `trim`+`lower`; hex PK.
-- **Idempotency** — `ingest_run` ledger keyed on `run_id`; one transaction per file; **reject the
-  file if `count` ≠ list length**.
-- **Lifecycle model** = durable row + status transitions — *not* Tuner's snapshot+diff, which is
-  wrong for partial-fill, non-revertible, ledger-backed needs (Tuner is per-resource + revertible).
-
-**Still open:**
 - `OD_COST` semantics in the summary table — must be customer-effective for chargeback. Raised in Azure Commit summary table schema.
 - Whether a renewal opens a **new** 12-month fee window (commercial — re-confirm against SOW §8.4).
 - Exchange lineage (`replaced_by` pointer) — shelved; status + successor row suffices for v0.
+- `lease_id` level — FOCUS `CommitmentDiscountId` is the join source (full ARM id, rollable to the order GUID); which level `lease_id` stores is a #3 build detail, not a #2 dependency. Both ids are stored.

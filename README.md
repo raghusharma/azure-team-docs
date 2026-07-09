@@ -5,6 +5,7 @@ pipeline contract. Start with the **team handoff**; the others are the
 full spec and background it links to.
 
 - [Azure Commit contract — team handoff](team-handoff.md)
+- [Azure Commit holdings scan contract](holdings-scan-contract.md)
 - [Azure Commit recommendation output contract](output-contract.md)
 - [Azure Commit — recommendation system-of-record design](system-of-record-design.md)
 - [Azure reservation SKU families (ISF) reference](isf-sku-families-reference.md)
