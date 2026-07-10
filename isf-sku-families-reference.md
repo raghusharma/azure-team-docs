@@ -1,8 +1,8 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-09. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-10. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # Azure reservation SKU families (ISF) reference
 
-The canonical source for the `normalized_sku_family` field in the [Commit contract](output-contract.md). Reservations apply to a **flexibility group**, not one SKU — Instance Size Flexibility (ISF). The team adopts Azure's own group names; we don't invent them.
+The canonical source for the `normalized_sku_family` field in the Commit contract. Reservations apply to a **flexibility group**, not one SKU — Instance Size Flexibility (ISF). The team adopts Azure's own group names; we don't invent them.
 
 ## Bottom line for the team
 
@@ -127,6 +127,6 @@ The `InstanceSizeFlexibilityGroup` from the catalog already bundles tier + hardw
 
 ## Related
 
-- [Azure Commit recommendation output contract](output-contract.md) — consumes `normalized_sku_family`; this resolves that open item.
+- Azure Commit recommendation output contract — consumes `normalized_sku_family`; this resolves that open item.
 - Azure Retail Prices API gotchas — separate API; note the SQL unit-normalization bug there.
-- [Azure Commit recommendation system-of-record design](system-of-record-design.md) — why the family is part of the recommendation identity.
+- Azure Commit recommendation system-of-record design — why the family is part of the recommendation identity.
