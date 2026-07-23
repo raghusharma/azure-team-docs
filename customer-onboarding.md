@@ -48,15 +48,15 @@ A reservation is a tenant-level resource with its own access control, independen
 
 On **Basics**, select **Create your own export** — *don't use the templates; they preselect extra datasets that block the Parquet format* (see [A5](#a5--special-cases)) → **Next**.
 
-On **Datasets**, use **+ Add export** to add exactly these three, each with **Frequency** = *Daily export of month-to-date costs*:
+On **Datasets**, set **Export prefix** to `cloudkeeper` — entered once, it applies to every export in the batch. Then use **+ Add export** to add exactly these three, each with **Frequency** = *Daily export of month-to-date costs*:
 
 | Type of data | Dataset version | Export name |
 | --- | --- | --- |
-| Cost and usage details (actual) | latest | `cloudkeeper-actual-cost` |
-| Cost and usage details (amortized) | latest | `cloudkeeper-amortized-cost` |
-| Cost and usage details (FOCUS) | **1.0r2** | `cloudkeeper-focus-cost` |
+| Cost and usage details (actual) | latest | `actual-cost` |
+| Cost and usage details (amortized) | latest | `amortized-cost` |
+| Cost and usage details (FOCUS) | **1.0r2** | `focus-cost` |
 
-Add nothing else — no reservation or price-sheet datasets. Then → **Next**.
+The prefix combines with each name, so the exports land as `cloudkeeper-actual-cost`, `cloudkeeper-amortized-cost`, `cloudkeeper-focus-cost`. Add nothing else — no reservation or price-sheet datasets. Then → **Next**.
 
 On **Destination**, choose **Create new**, then pick any **Subscription**, **Resource group**, and **Location** in your own tenant. Set the rest as:
 
@@ -88,7 +88,7 @@ Email your CloudKeeper contact with:
 - **Billing account ID** (Cost Management + Billing → Properties)
 - Service principal **objectId** for `CkAzureTuner` (lookup in [A4](#a4--cli-verification))
 - Storage account **resource ID** (or name + subscription)
-- The export **names** / **container** / **directory** *only if you changed them* from the Step 5 defaults (`cloudkeeper-*-cost` / `cost-exports` / `azure-cost`)
+- The export **prefix** / **container** / **directory** *only if you changed them* from the Step 5 defaults (`cloudkeeper` / `cost-exports` / `azure-cost`)
 
 CloudKeeper will pull a sanity-check file and confirm onboarding is complete, typically within one business day.
 
