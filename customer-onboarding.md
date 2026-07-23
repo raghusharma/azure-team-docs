@@ -1,4 +1,4 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-10. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-23. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # CloudKeeper Azure — Customer Onboarding Guide
 
@@ -46,9 +46,17 @@ A reservation is a tenant-level resource with its own access control, independen
 
 **Cost Management + Billing** → your billing account → **Exports** → **+ Create**.
 
-On **Basics**, select the **All data** template (actual + amortized + FOCUS) → **Next**.
+On **Basics**, select **Create your own export** — *don't use the templates; they preselect extra datasets that block the Parquet format* (see [A5](#a5--special-cases)) → **Next**.
 
-On **Datasets**, set **Export prefix** to `cloudkeeper`. The three datasets are preselected and already run **Daily** — leave them as-is → **Next**.
+On **Datasets**, use **+ Add export** to add exactly these three, each with **Frequency** = *Daily export of month-to-date costs*:
+
+| Type of data | Dataset version | Export name |
+| --- | --- | --- |
+| Cost and usage details (actual) | latest | `cloudkeeper-actual-cost` |
+| Cost and usage details (amortized) | latest | `cloudkeeper-amortized-cost` |
+| Cost and usage details (FOCUS) | **1.0r2** | `cloudkeeper-focus-cost` |
+
+Add nothing else — no reservation or price-sheet datasets. Then → **Next**.
 
 On **Destination**, choose **Create new**, then pick any **Subscription**, **Resource group**, and **Location** in your own tenant. Set the rest as:
 
@@ -60,6 +68,9 @@ On **Destination**, choose **Create new**, then pick any **Subscription**, **Res
 | Format | **Parquet** *(default is CSV — change it)* |
 | Compression type | **Snappy** *(default is Gzip)* |
 | Overwrite data | leave **enabled** (the default) |
+
+> **Parquet missing from the Format dropdown?**
+> A CSV-only dataset (reservation or price sheet) is in your export list. Go back to **Datasets** and remove everything except the three cost exports — Azure only offers Parquet when every dataset in the batch supports it.
 
 Select **Review + create**. The first files land within 4 hours.
 
@@ -77,7 +88,7 @@ Email your CloudKeeper contact with:
 - **Billing account ID** (Cost Management + Billing → Properties)
 - Service principal **objectId** for `CkAzureTuner` (lookup in [A4](#a4--cli-verification))
 - Storage account **resource ID** (or name + subscription)
-- The export **prefix** / **container** / **directory** *only if you changed them* from the Step 5 defaults (`cloudkeeper` / `cost-exports` / `azure-cost`)
+- The export **names** / **container** / **directory** *only if you changed them* from the Step 5 defaults (`cloudkeeper-*-cost` / `cost-exports` / `azure-cost`)
 
 CloudKeeper will pull a sanity-check file and confirm onboarding is complete, typically within one business day.
 
@@ -244,8 +255,10 @@ For maximum isolation, assign `Storage Blob Data Reader` at container scope inst
 
 ### Export setup details (Step 5)
 
-- **The "All data" template** bundles exactly the three cost datasets (actual, amortized, FOCUS) — not the reservation or price-sheet datasets — so the Parquet format stays available. On the Destination step the format **defaults to CSV / Gzip**; switch it to **Parquet / Snappy**.
-- **Folder layout.** The template names the three exports `cloudkeeper-actual-cost`, `cloudkeeper-amortized-cost`, and `cloudkeeper-focus-cost` (from your `cloudkeeper` prefix), and each becomes a subfolder under `cost-exports/azure-cost/` — all in the single storage account, so the Step 6 grant covers all three.
+- **Why not the portal templates?** Templates like **All data** preselect more than the three cost datasets — including the reservation datasets, which only support CSV. Azure offers the Parquet format only when *every* dataset in the batch supports it, so a template batch silently locks all exports to uncompressed CSV. Creating the three exports yourself avoids this.
+- **Already created extras?** Delete the unneeded exports from the Exports list, then edit each remaining export's Destination to **Parquet / Snappy** and run it once with **Run now**.
+- **Format defaults to CSV / Gzip** on the Destination step — switch it to **Parquet / Snappy**.
+- **Folder layout.** Each export becomes a subfolder named after it under `cost-exports/azure-cost/` — all in the single storage account, so the Step 6 grant covers all three.
 - **FOCUS schema version.** The FOCUS export uses the current generally available version (**1.0r2**). To view or change it, edit that export with the pencil icon on the Datasets step.
 - **File partitioning** is on by default and can't be disabled — that's expected. Each run includes a `manifest.json` describing the partitions.
 

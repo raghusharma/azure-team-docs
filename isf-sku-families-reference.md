@@ -1,4 +1,4 @@
-> Published from CloudKeeper's Azure Commit working docs on 2026-07-10. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
+> Published from CloudKeeper's Azure Commit working docs on 2026-07-23. Auto-generated copy — don't edit this file; changes are overwritten on the next publish. Questions / change requests → Raghu Sharma.
 
 # Azure reservation SKU families (ISF) reference
 
@@ -21,14 +21,40 @@ ISF lives in each catalog item's `skuProperties[]` array as name/value pairs:
 
 (MS docs are inconsistent — some responses name these `InstanceSizeFlexibilityGroup` / `InstanceSizeFlexibilityRatio`. Read **either**.)
 
-**Bash (`az` CLI + `jq`)** — the CLI paginates for you, so no `nextLink` handling:
+> **Five traps. Two of them return wrong data with no error at all.**
+> All verified 2026-07-13 against a real customer subscription. Working implementation:
+> `azure-commit-pipeline/scripts/pull_isf.sh`.
+>
+> **1. Use api-version `2019-04-01`, not `2022-11-01`.** `2019-04-01` returns the whole catalog in
+> **one** response (1,134 VM SKUs). `2022-11-01` paginates at 50/page behind a `nextLink` that
+> `az reservations catalog show` does **not** follow — so the CLI hands back **50 of 1,111** SKUs
+> with no error, and you build ISF from ~4% of the catalog. *(An earlier version of this doc claimed
+> the CLI paginates for you. It does not.)*
+>
+> **2. An unsupported `reservedResourceType` silently returns VIRTUAL MACHINES.** On `2022-11-01`,
+> `SqlManagedInstance` returns 50 rows of `resourceType: virtualMachines` — VM SKUs, VM ratios, no
+> error. Loop resource types trusting the response and you load VM data into a SQL table and never
+> know. **Assert `resourceType` on every row.** (`2019-04-01` errors properly here — a second reason
+> to prefer it.)
+>
+> **3. SQL lives under `SqlDatabases`, and only on `2019-04-01`.** It 400s on `2022-11-01` ("use
+> 2019-04-01 instead"). On the right version it returns **both** `SQLDatabases` and
+> `SQLManagedInstances` rows. There is no `SqlManagedInstance` type.
+>
+> **4. Ratios come back unnormalized.** `Standard_B16als_v2` = `113.4`, but its group's smallest SKU
+> is `2.0`, so the usable ratio is `56.7`. Divide by the group minimum — that is what makes a "unit"
+> mean "multiples of the family's smallest size".
+>
+> **5. The flag is `--subscription-id`, not `--subscription`.**
+
+**Bash (`az` CLI + `jq`)** — page one only; see the warning above before using this shape:
 ```bash
 az extension add --name reservations 2>/dev/null   # one-time
 SUB="<subscription-id>"; LOC="eastus"
 RTYPE="VirtualMachines"   # | SqlDatabases | SqlManagedInstance | RedisCache | ...
 
 az reservations catalog show \
-  --subscription "$SUB" --reserved-resource-type "$RTYPE" --location "$LOC" \
+  --subscription-id "$SUB" --reserved-resource-type "$RTYPE" --location "$LOC" \
 | jq -r '
   ["InstanceSizeFlexibilityGroup","ArmSkuName","Ratio"],
   ( .[]
@@ -102,7 +128,21 @@ A `Dsv5 Series` reservation of quantity 8 covers, e.g., 8× D2s_v5, or 2× D8s_v
 
 ## SQL — same API, family encodes more
 
-SQL has **no ratio CSV** — but it comes through the **same Catalogs API** with `InstanceSizeFlexibilityGroup` names like `General Purpose Gen5` (ArmSkuName e.g. `GP_Gen5_2`). The unit is the **vCore** (1 vCore = 1 unit; quantity = total vCores).
+> **Corrected 2026-07-13 — the model below is right, the *mechanism* was wrong**
+> SQL catalog items carry **no `InstanceSizeFlexibilityGroup`, no `ReservationsAutofitGroup` and no
+> ratio of any kind** — verified against a real customer subscription (`SqlDatabases`,
+> api-version `2019-04-01`, 18 items: 12 Managed Instance + 6 SQL DB). There is nothing to normalise.
+>
+> The family **is the catalog item's `name`** — e.g. `SQLMI_BC_Compute_Premium_Memory_Optimized_ZR`,
+> which already encodes deployment type + tier + hardware + zone-redundancy, exactly as this section
+> describes. The unit is in `MeterType`: **`1 vCore Hour`**. So the quantity is simply *total vCores in
+> that family* — a ratio table is neither available nor needed.
+>
+> **Consequence for the engine:** the VM path (`Σ count × ratio` → family units → buy the smallest
+> size) does **not** transfer to SQL. SQL needs its own, simpler path. `isf_ratio` is a VM/Redis/
+> DedicatedHost table — those are the only three types that carry autofit groups at all.
+
+The unit is the **vCore** (1 vCore = 1 unit; quantity = total vCores).
 
 A SQL reservation is pinned by **Region + Deployment Type + Performance Tier + Hardware generation**, so for SQL the family must capture all of:
 - **Deployment type:** SQL Database (single / elastic pool) vs SQL Managed Instance
